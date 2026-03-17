@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 project(ShapeAndContourAnalyzer VERSION 1.0 LANGUAGES CXX)
+cmake_policy(SET CMP0148 NEW)
 
 # Set C++ standard to C++17
 set(CMAKE_CXX_STANDARD 17)
@@ -9,55 +10,42 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # 1. DEPENDENCIES
 # ==============================================================================
 
-# Find the exact Python version you are currently running
-find_package(Python COMPONENTS Interpreter Development REQUIRED)
+set(PYBIND11_FINDPYTHON ON)
 
-# Find Pybind11 (Make sure your virtual environment is activated before running cmake!)
+# Path to your OpenCV and Pybind11 installations (update these if needed)
+set(OpenCV_DIR "D:/opencv/build")
+set(pybind11_DIR "D:/Python11/Lib/site-packages/pybind11/share/cmake/pybind11")
+
 find_package(pybind11 REQUIRED)
-
-# Find OpenCV (Required for your actual image processing later)
-find_package(OpenCV REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 
 # ==============================================================================
 # 2. CREATE THE PYTHON MODULE
 # ==============================================================================
 
-# Create the module and name it "cv_backend" (this MUST match your Python import)
-# Add all your C++ source files here
-pybind11_add_module(cv_backend 
+pybind11_add_module(cv_backend
     Backend/Main_bindings.cpp
     Backend/Canny.cpp
-    Backend/Contour.cpp
+    Backend/Snake.cpp
 )
 
-# Tell the compiler where to look for header files (like your image_utils.hpp)
-target_include_directories(cv_backend PRIVATE 
+target_include_directories(cv_backend PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Backend
     ${CMAKE_CURRENT_SOURCE_DIR}/Helpers
     ${OpenCV_INCLUDE_DIRS}
 )
 
-# Link OpenCV to your backend
 target_link_libraries(cv_backend PRIVATE ${OpenCV_LIBS})
 
 # ==============================================================================
-# 3. CROSS-PLATFORM OUTPUT FIX
+# 3. OUTPUT DIRECTORY (to frontend/, matching your previous project)
 # ==============================================================================
 
-# Force the compiled module (.so on Linux, .pyd on Windows) to output 
-# directly into the 'build' folder instead of nested 'Release'/'Debug' folders.
 set_target_properties(cv_backend PROPERTIES
-    PREFIX "${PYTHON_MODULE_PREFIX}"
-    SUFFIX "${PYTHON_MODULE_EXTENSION}"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/frontend"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/frontend"
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/frontend"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/frontend"
+    LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/frontend"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/frontend"
 )
-
-# Extra enforcement for multi-config generators like Windows Visual Studio
-foreach(OUTPUTCONFIG ${CMAKE_CONFIGURATION_TYPES})
-    string(TOUPPER ${OUTPUTCONFIG} OUTPUTCONFIG)
-    set_target_properties(cv_backend PROPERTIES
-        LIBRARY_OUTPUT_DIRECTORY_${OUTPUTCONFIG} "${CMAKE_CURRENT_BINARY_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_${OUTPUTCONFIG} "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-endforeach()
