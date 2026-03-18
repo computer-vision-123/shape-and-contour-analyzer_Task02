@@ -82,6 +82,18 @@ class CannyTab(QWidget):
         apply_btn.clicked.connect(self._apply_canny)
         ctrl_layout.addWidget(apply_btn)
 
+        self._lines_btn = QPushButton("Detect Lines")
+        self._lines_btn.clicked.connect(self._detect_lines)
+        ctrl_layout.addWidget(self._lines_btn)
+
+        self._circles_btn = QPushButton("Detect Circles")
+        self._circles_btn.clicked.connect(self._detect_circles)
+        ctrl_layout.addWidget(self._circles_btn)
+
+        self._ellipses_btn = QPushButton("Detect Ellipses")
+        self._ellipses_btn.clicked.connect(self._detect_ellipses)
+        ctrl_layout.addWidget(self._ellipses_btn)
+
         ctrl_layout.addStretch()
         root.addWidget(ctrl_box)
 
@@ -122,6 +134,43 @@ class CannyTab(QWidget):
                     self._result_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
             )
+            # Reset original image in case shapes were drawn on it.
+            self._orig_label.setPixmap(
+                _bytes_to_pixmap(self._original_bytes).scaled(
+                    self._orig_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+            )
             self._status.setText(f"Canny applied — threshold {percent}%.")
         except Exception as e:
             self._status.setText(f"Error: {e}")
+
+    def _draw_shapes(self, shape_func, label_text):
+        if not self._result_bytes or not self._original_bytes:
+            self._status.setText("Please apply Canny first.")
+            return
+        try:
+            orig_with_shapes = shape_func(self._original_bytes, self._result_bytes)
+            edge_with_shapes = shape_func(self._result_bytes, self._result_bytes)
+            
+            self._orig_label.setPixmap(
+                _bytes_to_pixmap(orig_with_shapes).scaled(
+                    self._orig_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+            )
+            self._result_label.setPixmap(
+                _bytes_to_pixmap(edge_with_shapes).scaled(
+                    self._result_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+            )
+            self._status.setText(f"{label_text} detected on both images.")
+        except Exception as e:
+            self._status.setText(f"Error: {e}")
+
+    def _detect_lines(self):
+        self._draw_shapes(cv_backend.detect_lines, "Lines")
+
+    def _detect_circles(self):
+        self._draw_shapes(cv_backend.detect_circles, "Circles")
+
+    def _detect_ellipses(self):
+        self._draw_shapes(cv_backend.detect_ellipses, "Ellipses")

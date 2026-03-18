@@ -16,7 +16,7 @@ cd build
 
 echo "--- 4. Configuring CMake ---"
 # Note: Modern CMake uses Python_EXECUTABLE instead of PYTHON_EXECUTABLE
-cmake -DPython_EXECUTABLE="$PYTHON_EXE" ..
+cmake -DPython_EXECUTABLE="$PYTHON_EXE" -DCMAKE_PREFIX_PATH="$(python -c 'import pybind11; print(pybind11.get_cmake_dir())')" ..
 
 echo "--- 5. Compiling backend ---"
 # Use all available CPU cores for a faster build
