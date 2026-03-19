@@ -5,7 +5,6 @@ namespace py = pybind11;
 // Forward declarations from Canny.cpp
 py::bytes run_canny(const py::bytes& imageBytes, int t_high_percent);
 
-// Forward declarations from Contour.cpp
 py::bytes detect_lines(const py::bytes& drawBytes, const py::bytes& edgeBytes);
 py::bytes detect_circles(const py::bytes& drawBytes, const py::bytes& edgeBytes);
 py::bytes detect_ellipses(const py::bytes& drawBytes, const py::bytes& edgeBytes);
