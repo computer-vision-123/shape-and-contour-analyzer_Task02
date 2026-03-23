@@ -27,6 +27,7 @@ pybind11_add_module(cv_backend
     Backend/Main_bindings.cpp
     Backend/Canny.cpp
     Backend/Snake.cpp
+    Backend/Hough.cpp
 )
 
 target_include_directories(cv_backend PRIVATE
