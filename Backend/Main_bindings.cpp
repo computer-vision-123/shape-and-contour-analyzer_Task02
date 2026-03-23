@@ -5,10 +5,14 @@
 
 namespace py = pybind11;
 
-// ── forward declarations (defined in Contour.cpp) ────────────────────────────
-int add_numbers(int a, int b);
+// ── Forward declarations ──────────────────────────────────────────────────────
+py::bytes run_canny(const py::bytes& imageBytes, int t_high_percent);
 
-// ── helper: convert Python list[(x,y)] ↔ std::vector<Point> ─────────────────
+py::bytes detect_lines(const py::bytes& drawBytes, const py::bytes& edgeBytes);
+py::bytes detect_circles(const py::bytes& drawBytes, const py::bytes& edgeBytes);
+py::bytes detect_ellipses(const py::bytes& drawBytes, const py::bytes& edgeBytes);
+
+// ── Helper: convert Python list[(x,y)] ↔ std::vector<Point> ─────────────────
 static std::vector<Point> pyToPoints(const std::vector<std::pair<int,int>> &v) {
     std::vector<Point> out;
     out.reserve(v.size());
@@ -22,12 +26,31 @@ static std::vector<std::pair<int,int>> pointsToPy(const std::vector<Point> &v) {
     return out;
 }
 
-// ── module ────────────────────────────────────────────────────────────────────
+// ── Module ────────────────────────────────────────────────────────────────────
 PYBIND11_MODULE(cv_backend, m) {
-    m.doc() = "CV backend — Snake active contour + utilities";
+    m.doc() = "CV backend — Canny, Hough transforms, Snake active contour + utilities";
 
-    // legacy
-    m.def("add_numbers",      &add_numbers,      "Adds two numbers");
+    // ── Canny edge detection ──────────────────────────────────────────────────
+    m.def("run_canny", &run_canny,
+          py::arg("image_bytes"),
+          py::arg("t_high_percent") = 10,
+          "Run Canny edge detection. Returns result as PNG bytes.");
+
+    // ── Hough transforms ──────────────────────────────────────────────────────
+    m.def("detect_lines", &detect_lines,
+          py::arg("draw_bytes"),
+          py::arg("edge_bytes"),
+          "Detect lines via Hough transform. Returns annotated image as PNG bytes.");
+
+    m.def("detect_circles", &detect_circles,
+          py::arg("draw_bytes"),
+          py::arg("edge_bytes"),
+          "Detect circles via Hough transform. Returns annotated image as PNG bytes.");
+
+    m.def("detect_ellipses", &detect_ellipses,
+          py::arg("draw_bytes"),
+          py::arg("edge_bytes"),
+          "Detect ellipses. Returns annotated image as PNG bytes.");
 
     // ── Snake API (stateless — pure functions, easy to call from Python) ──────
 

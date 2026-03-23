@@ -1,52 +1,74 @@
-"""
-tab_contour.py  –  Active-Contour (Snake) tab
-  • Sub-tab 1: Snake canvas (draw + run)
-  • Sub-tab 2: Test cases table (name + params + apply button)
-"""
+"""tab_contour.py — Active Contour (Snake) tab with drawable canvas and test cases."""
 
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-                              QLabel, QDoubleSpinBox, QSpinBox, QFileDialog,
-                              QTextEdit, QGroupBox, QFormLayout, QApplication,
-                              QSizePolicy, QTabWidget, QTableWidget,
-                              QTableWidgetItem, QHeaderView, QAbstractItemView)
-from PyQt5.QtGui  import (QPixmap, QPainter, QPen, QColor, QImage,
-                           QCursor, QPolygon, QFont)
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+    QLabel, QDoubleSpinBox, QSpinBox, QFileDialog,
+    QTextEdit, QGroupBox, QFormLayout, QApplication,
+    QSizePolicy, QTabWidget, QTableWidget,
+    QTableWidgetItem, QHeaderView, QAbstractItemView,
+)
+from PyQt5.QtGui import (
+    QPixmap, QPainter, QPen, QColor,
+    QCursor, QPolygon, QFont,
+)
 from PyQt5.QtCore import Qt, QPoint
 import cv2
-import numpy as np
+
 import cv_backend
+from Helpers.image_utils import bgr_to_pixmap
+from styles import COLORS, get_base_styles, get_title_style, get_hint_style
 
+__all__ = ["ContourTab"]
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Test-case data
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Test-case presets
+# ---------------------------------------------------------------------------
+
 TEST_CASES = [
-    {"name": "hand.png",                              "alpha": 0.5, "beta": 0.8, "gamma": 2.0, "window": 3, "iters": 300},
-    {"name": "apple.png",                    "alpha": 0.8, "beta": 0.4, "gamma": 2.5, "window": 3, "iters": 300},
+    {"name": "hand.png",   "alpha": 0.5, "beta": 0.8, "gamma": 2.0, "window": 3, "iters": 300},
+    {"name": "apple.png",  "alpha": 0.8, "beta": 0.4, "gamma": 2.5, "window": 3, "iters": 300},
     {"name": "leaves.png", "alpha": 0.3, "beta": 0.2, "gamma": 3.0, "window": 4, "iters": 400},
 ]
 
+# Minimum squared pixel distance between successive drag samples
+_DRAG_MIN_DIST_SQ = 8 ** 2
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  DrawableLabel
-# ─────────────────────────────────────────────────────────────────────────────
+# Contour fill colour (R, G, B, A)
+_FILL_COLOR = (0, 180, 230, 100)
+
+
+# ---------------------------------------------------------------------------
+# DrawableLabel
+# ---------------------------------------------------------------------------
+
 class DrawableLabel(QLabel):
-    DRAG_MIN_DIST = 8
+    """QLabel that lets the user draw a closed contour by click-and-drag."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
-        self.setText("Load an image to begin")
+        self.setText("Load an image\n\nClick and drag to draw contour")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(500, 400)
-        self.setStyleSheet("border: 1px solid #555; background: #1e1e1e; color: #aaa;")
+        self.setStyleSheet(f"""
+            border: 2px dashed {COLORS['accent_teal']};
+            border-radius: 12px;
+            background: {COLORS['bg_warm']};
+            color: {COLORS['text_light']};
+        """)
         self.setCursor(QCursor(Qt.CrossCursor))
-        self._orig_bgr    = None
-        self._base_pixmap = None
-        self.contour_points = []
+
+        self._orig_bgr = None
+        self._base_pixmap: QPixmap | None = None
+        self.contour_points: list[QPoint] = []
         self._dragging = False
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     def load_image(self, path: str) -> bool:
+        """Load an image from *path*. Returns True on success."""
         img = cv2.imread(path)
         if img is None:
             return False
@@ -55,56 +77,101 @@ class DrawableLabel(QLabel):
         self._rebuild_pixmap()
         return True
 
-    def _rebuild_pixmap(self):
+    def encoded_image(self) -> bytes | None:
+        """Return the loaded image as PNG bytes, or None if no image is loaded."""
+        if self._orig_bgr is None:
+            return None
+        ok, buf = cv2.imencode(".png", self._orig_bgr)
+        return bytes(buf) if ok else None
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _rebuild_pixmap(self) -> None:
         if self._orig_bgr is None:
             return
-        rgb = cv2.cvtColor(self._orig_bgr, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb.shape
-        rgb_c = np.ascontiguousarray(rgb)
-        qimg = QImage(rgb_c.data, w, h, ch * w, QImage.Format_RGB888).copy()
-        self._base_pixmap = QPixmap.fromImage(qimg)
-        self.setPixmap(self._base_pixmap.scaled(
-            self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self._base_pixmap = bgr_to_pixmap(self._orig_bgr)
+        self.setPixmap(
+            self._base_pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        )
         self.setText("")
 
-    def resizeEvent(self, event):
+    def _displayed_rect(self) -> tuple[float, float, float]:
+        """Return (offset_x, offset_y, scale) for the currently displayed pixmap."""
+        if self._base_pixmap is None:
+            return 0.0, 0.0, 1.0
+        pw, ph = self._base_pixmap.width(), self._base_pixmap.height()
+        lw, lh = self.width(), self.height()
+        scale = min(lw / pw, lh / ph)
+        return (lw - pw * scale) / 2, (lh - ph * scale) / 2, scale
+
+    def _label_to_img(self, pos: QPoint) -> QPoint | None:
+        """Convert a label-space position to image-space. Returns None if out of bounds."""
+        if self._base_pixmap is None:
+            return None
+        ox, oy, scale = self._displayed_rect()
+        ix = int((pos.x() - ox) / scale)
+        iy = int((pos.y() - oy) / scale)
+        if 0 <= ix < self._base_pixmap.width() and 0 <= iy < self._base_pixmap.height():
+            return QPoint(ix, iy)
+        return None
+
+    def _img_to_label(self, pt: QPoint) -> QPoint:
+        """Convert an image-space point to label-space."""
+        ox, oy, scale = self._displayed_rect()
+        return QPoint(int(pt.x() * scale + ox), int(pt.y() * scale + oy))
+
+    # ------------------------------------------------------------------
+    # Qt overrides
+    # ------------------------------------------------------------------
+
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if self._base_pixmap:
-            self.setPixmap(self._base_pixmap.scaled(
-                self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.setPixmap(
+                self._base_pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
 
-    def paintEvent(self, event):
+    def paintEvent(self, event) -> None:
         super().paintEvent(event)
         n = len(self.contour_points)
         if n < 1:
             return
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         pts = [self._img_to_label(p) for p in self.contour_points]
+
+        # Semi-transparent fill
         if n >= 3:
-            painter.setBrush(QColor(0, 180, 255, 40))
+            painter.setBrush(QColor(*_FILL_COLOR))
             painter.setPen(Qt.NoPen)
             painter.drawPolygon(QPolygon(pts))
-        pen = QPen(QColor(0, 220, 80), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+
+        # Outline
+        pen = QPen(QColor(COLORS['accent_red']), 3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         painter.setPen(pen)
         for i in range(n - 1):
             painter.drawLine(pts[i], pts[i + 1])
+
+        # Closing segment (dashed while dragging, solid when done)
         if n >= 3:
-            painter.setPen(QPen(QColor(0, 220, 80), 2,
-                                Qt.DashLine if self._dragging else Qt.SolidLine))
+            close_style = Qt.DashLine if self._dragging else Qt.SolidLine
+            painter.setPen(QPen(QColor(COLORS['accent_red']), 2, close_style))
             painter.drawLine(pts[-1], pts[0])
+
+        # Control points — first point highlighted in teal
         for i, p in enumerate(pts):
-            if i == 0:
-                painter.setBrush(QColor(255, 220, 0))
-                painter.setPen(QPen(QColor(180, 140, 0), 1))
-                painter.drawEllipse(p, 6, 6)
-            else:
-                painter.setBrush(QColor(255, 80, 80))
-                painter.setPen(QPen(QColor(180, 30, 30), 1))
-                painter.drawEllipse(p, 3, 3)
+            color = COLORS['accent_teal'] if i == 0 else COLORS['accent_red']
+            size = 8 if i == 0 else 5
+            painter.setBrush(QColor(color))
+            painter.setPen(QPen(QColor(COLORS['primary_dark']), 1))
+            painter.drawEllipse(p, size, size)
+
         painter.end()
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event) -> None:
         if self._orig_bgr is None:
             return
         if event.button() == Qt.LeftButton:
@@ -119,7 +186,7 @@ class DrawableLabel(QLabel):
             self._dragging = False
             self.update()
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event) -> None:
         if not self._dragging or self._orig_bgr is None:
             return
         pt = self._label_to_img(event.pos())
@@ -128,152 +195,172 @@ class DrawableLabel(QLabel):
         if self.contour_points:
             last = self.contour_points[-1]
             dx, dy = pt.x() - last.x(), pt.y() - last.y()
-            if dx * dx + dy * dy < self.DRAG_MIN_DIST ** 2:
+            if dx * dx + dy * dy < _DRAG_MIN_DIST_SQ:
                 return
         self.contour_points.append(pt)
         self.update()
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and self._dragging:
             self._dragging = False
             self.update()
 
-    def _displayed_rect(self):
-        if self._base_pixmap is None:
-            return 0.0, 0.0, 1.0
-        pw, ph = self._base_pixmap.width(), self._base_pixmap.height()
-        lw, lh = self.width(), self.height()
-        scale = min(lw / pw, lh / ph)
-        return (lw - pw * scale) / 2, (lh - ph * scale) / 2, scale
 
-    def _label_to_img(self, pos):
-        if self._base_pixmap is None:
-            return None
-        ox, oy, scale = self._displayed_rect()
-        ix = int((pos.x() - ox) / scale)
-        iy = int((pos.y() - oy) / scale)
-        pw, ph = self._base_pixmap.width(), self._base_pixmap.height()
-        if 0 <= ix < pw and 0 <= iy < ph:
-            return QPoint(ix, iy)
-        return None
+# ---------------------------------------------------------------------------
+# SnakeCanvas
+# ---------------------------------------------------------------------------
 
-    def _img_to_label(self, pt):
-        ox, oy, scale = self._displayed_rect()
-        return QPoint(int(pt.x() * scale + ox), int(pt.y() * scale + oy))
-
-    def encoded_image(self):
-        if self._orig_bgr is None:
-            return None
-        ok, buf = cv2.imencode(".png", self._orig_bgr)
-        return bytes(buf) if ok else None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Snake canvas sub-tab
-# ─────────────────────────────────────────────────────────────────────────────
 class SnakeCanvas(QWidget):
+    """Widget containing the drawable image canvas and snake parameter controls."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._running = False
-        self._build_ui()
+        self.setStyleSheet(get_base_styles())
+        self._setup_ui()
 
-    def _build_ui(self):
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self) -> None:
         root = QHBoxLayout(self)
+        root.setSpacing(15)
+        root.setContentsMargins(15, 15, 15, 15)
 
+        # ---- Left: canvas ----
         left = QVBoxLayout()
+
+        title = QLabel("Active Contour (Snake)")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(get_title_style())
+        left.addWidget(title)
+
         self.img_label = DrawableLabel()
         left.addWidget(self.img_label)
-        hint = QLabel("Hold & drag to draw contour  |  Right-click to clear")
-        hint.setStyleSheet("color: #888; font-size: 11px; padding: 2px;")
+
+        hint = QLabel("Left click & drag to draw contour | Right click to clear")
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet(get_hint_style())
         left.addWidget(hint)
+
         root.addLayout(left, stretch=3)
 
+        # ---- Right: controls ----
         right = QVBoxLayout()
-        right.setAlignment(Qt.AlignTop)
+        right.setSpacing(10)
 
-        btn_load = QPushButton("Load Image")
-        btn_load.clicked.connect(self._load_image)
-        right.addWidget(btn_load)
+        load_btn = QPushButton("Load Image")
+        load_btn.clicked.connect(self._load_image)
+        right.addWidget(load_btn)
 
-        param_box = QGroupBox("Snake Parameters")
+        # Parameters
+        param_box = QGroupBox("Parameters")
         form = QFormLayout(param_box)
+        form.setSpacing(8)
 
-        def dbl(val):
-            s = QDoubleSpinBox()
-            s.setRange(0, 100); s.setValue(val); s.setSingleStep(0.1)
-            return s
-        def spin(val, hi=5000):
-            s = QSpinBox(); s.setRange(1, hi); s.setValue(val); return s
+        self.sp_alpha = self._make_double_spinbox(1.0)
+        self.sp_beta  = self._make_double_spinbox(1.0)
+        self.sp_gamma = self._make_double_spinbox(1.0)
+        self.sp_iters = self._make_spinbox(100, max_val=5000)
+        self.sp_win   = self._make_spinbox(2,   max_val=20)
 
-        self.sp_alpha = dbl(1.0)
-        self.sp_beta  = dbl(1.0)
-        self.sp_gamma = dbl(1.0)
-        self.sp_iters = spin(100)
-        self.sp_win   = spin(2, hi=20)
-
-        form.addRow("α  (elasticity):", self.sp_alpha)
-        form.addRow("β  (curvature):",  self.sp_beta)
-        form.addRow("γ  (image grad):", self.sp_gamma)
-        form.addRow("Max iterations:",  self.sp_iters)
-        form.addRow("Search window ½:", self.sp_win)
+        form.addRow("Elasticity (α):",      self.sp_alpha)
+        form.addRow("Curvature (β):",       self.sp_beta)
+        form.addRow("Image Gradient (γ):",  self.sp_gamma)
+        form.addRow("Max Iterations:",      self.sp_iters)
+        form.addRow("Search Window:",       self.sp_win)
         right.addWidget(param_box)
 
+        # Run / Stop
         btn_row = QHBoxLayout()
         self.btn_run  = QPushButton("Run Snake")
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
         self.btn_run.clicked.connect(self._run_snake)
-        self.btn_stop.clicked.connect(lambda: setattr(self, '_running', False))
+        self.btn_stop.clicked.connect(self._stop_snake)
         btn_row.addWidget(self.btn_run)
         btn_row.addWidget(self.btn_stop)
         right.addLayout(btn_row)
 
+        # Results
         res_box = QGroupBox("Results")
-        res_l = QVBoxLayout(res_box)
+        res_layout = QVBoxLayout(res_box)
         self.lbl_perimeter = QLabel("Perimeter: —")
         self.lbl_area      = QLabel("Area: —")
         self.lbl_pts       = QLabel("Points: —")
-        res_l.addWidget(self.lbl_perimeter)
-        res_l.addWidget(self.lbl_area)
-        res_l.addWidget(self.lbl_pts)
+        for lbl in (self.lbl_perimeter, self.lbl_area, self.lbl_pts):
+            lbl.setStyleSheet("padding: 4px;")
+            res_layout.addWidget(lbl)
         right.addWidget(res_box)
 
+        # Chain code
         cc_box = QGroupBox("Chain Code (8-direction)")
-        cc_l = QVBoxLayout(cc_box)
+        cc_layout = QVBoxLayout(cc_box)
         self.txt_chain = QTextEdit()
         self.txt_chain.setReadOnly(True)
-        self.txt_chain.setMaximumHeight(120)
-        self.txt_chain.setStyleSheet("font-family: monospace; font-size: 11px;")
-        cc_l.addWidget(self.txt_chain)
+        self.txt_chain.setMaximumHeight(100)
+        cc_layout.addWidget(self.txt_chain)
         right.addWidget(cc_box)
 
         right.addStretch()
         root.addLayout(right, stretch=1)
 
-    def apply_params(self, alpha, beta, gamma, window, iters):
+    # ------------------------------------------------------------------
+    # Widget factories
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_double_spinbox(value: float) -> QDoubleSpinBox:
+        s = QDoubleSpinBox()
+        s.setRange(0.0, 100.0)
+        s.setValue(value)
+        s.setSingleStep(0.1)
+        s.setDecimals(2)
+        return s
+
+    @staticmethod
+    def _make_spinbox(value: int, max_val: int) -> QSpinBox:
+        s = QSpinBox()
+        s.setRange(1, max_val)
+        s.setValue(value)
+        return s
+
+    # ------------------------------------------------------------------
+    # Public API (used by TestCasesTab)
+    # ------------------------------------------------------------------
+
+    def apply_params(self, alpha: float, beta: float, gamma: float,
+                     window: int, iters: int) -> None:
+        """Load a preset into the parameter spinboxes."""
         self.sp_alpha.setValue(alpha)
         self.sp_beta.setValue(beta)
         self.sp_gamma.setValue(gamma)
         self.sp_win.setValue(window)
         self.sp_iters.setValue(iters)
 
-    def _load_image(self):
+    # ------------------------------------------------------------------
+    # Slots
+    # ------------------------------------------------------------------
+
+    def _load_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Image", "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
-        if path:
-            if not self.img_label.load_image(path):
-                self.lbl_perimeter.setText("Failed to load image")
-            else:
-                self.lbl_perimeter.setText("Perimeter: —")
-                self.lbl_area.setText("Area: —")
-                self.lbl_pts.setText("Points: —")
-                self.txt_chain.clear()
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)",
+        )
+        if path and self.img_label.load_image(path):
+            self.lbl_perimeter.setText("Perimeter: —")
+            self.lbl_area.setText("Area: —")
+            self.lbl_pts.setText("Points: —")
+            self.txt_chain.clear()
 
-    def _run_snake(self):
+    def _stop_snake(self) -> None:
+        self._running = False
+
+    def _run_snake(self) -> None:
         pts = self.img_label.contour_points
         if len(pts) < 3:
-            self.lbl_perimeter.setText("Draw a contour first (need ≥ 3 points)")
+            self.lbl_perimeter.setText("Draw a contour first (≥ 3 points)")
             return
         img_bytes = self.img_label.encoded_image()
         if img_bytes is None:
@@ -290,8 +377,11 @@ class SnakeCanvas(QWidget):
                 break
             new_points = cv_backend.snake_evolve_once(
                 img_bytes, points,
-                self.sp_alpha.value(), self.sp_beta.value(),
-                self.sp_gamma.value(), self.sp_win.value())
+                self.sp_alpha.value(),
+                self.sp_beta.value(),
+                self.sp_gamma.value(),
+                self.sp_win.value(),
+            )
             self.img_label.contour_points = [QPoint(x, y) for x, y in new_points]
             self.img_label.update()
             QApplication.processEvents()
@@ -299,10 +389,10 @@ class SnakeCanvas(QWidget):
                 break
             points = new_points
 
-        chain_raw = cv_backend.snake_chain_code(points)
-        perimeter = cv_backend.snake_perimeter(chain_raw)
-        area      = cv_backend.snake_area(points, chain_raw)
-        chain_fmt = cv_backend.snake_format_chain_code(chain_raw, 6)
+        chain_raw   = cv_backend.snake_chain_code(points)
+        perimeter   = cv_backend.snake_perimeter(chain_raw)
+        area        = cv_backend.snake_area(points, chain_raw)
+        chain_fmt   = cv_backend.snake_format_chain_code(chain_raw, 6)
 
         self.lbl_perimeter.setText(f"Perimeter: {perimeter:.1f} px")
         self.lbl_area.setText(f"Area: {area:.1f} px²")
@@ -314,71 +404,128 @@ class SnakeCanvas(QWidget):
         self.btn_stop.setEnabled(False)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Test cases sub-tab
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# TestCasesTab
+# ---------------------------------------------------------------------------
+
 class TestCasesTab(QWidget):
+    """Table of preset test cases that populate SnakeCanvas parameters."""
+
+    _PARAM_COLS  = ["α", "β", "γ", "Iterations", "Window"]
+    _ALL_COLS    = ["Image"] + _PARAM_COLS + ["Action"]
+    _PARAM_WIDTH = 70
+    _BTN_WIDTH   = 90
+    _ROW_HEIGHT  = 40
+
     def __init__(self, snake_canvas: SnakeCanvas, parent=None):
         super().__init__(parent)
         self._canvas = snake_canvas
-        self._build_ui()
+        self.setStyleSheet(get_base_styles())
+        self._setup_ui()
 
-    def _build_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
 
-        cols = ["Image name", "α", "β", "γ", "Max iter", "Window", ""]
-        self.table = QTableWidget(len(TEST_CASES), len(cols))
-        self.table.setHorizontalHeaderLabels(cols)
+        title = QLabel("Test Cases")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet(get_title_style())
+        layout.addWidget(title)
+
+        self.table = QTableWidget(len(TEST_CASES), len(self._ALL_COLS))
+        self.table.setHorizontalHeaderLabels(self._ALL_COLS)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(True)
-
-        mono = QFont("Consolas", 10)
-
-        for row, tc in enumerate(TEST_CASES):
-            def cell(text, font=None, center=True):
-                it = QTableWidgetItem(str(text))
-                it.setTextAlignment((Qt.AlignCenter if center else Qt.AlignLeft | Qt.AlignVCenter))
-                if font:
-                    it.setFont(font)
-                return it
-
-            self.table.setItem(row, 0, cell(tc["name"],          center=False))
-            self.table.setItem(row, 1, cell(tc["alpha"],         font=mono))
-            self.table.setItem(row, 2, cell(tc["beta"],          font=mono))
-            self.table.setItem(row, 3, cell(tc["gamma"],         font=mono))
-            self.table.setItem(row, 4, cell(tc["iters"],         font=mono))
-            self.table.setItem(row, 5, cell(tc["window"],        font=mono))
-
-            btn = QPushButton("Apply")
-            btn.setStyleSheet("font-size: 11px; padding: 3px 10px;")
-            btn.clicked.connect(lambda _, r=row: self._apply(r))
-            self.table.setCellWidget(row, 6, btn)
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
-        for col in range(1, 6):
-            hdr.setSectionResizeMode(col, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)                   # Image column
+        for col in range(1, 6):                                             # Parameter columns
+            hdr.setSectionResizeMode(col, QHeaderView.Fixed)
+            self.table.setColumnWidth(col, self._PARAM_WIDTH)
+        hdr.setSectionResizeMode(6, QHeaderView.Fixed)                     # Action column
+        self.table.setColumnWidth(6, self._BTN_WIDTH)
+        self.table.verticalHeader().setDefaultSectionSize(self._ROW_HEIGHT)
 
-        self.table.resizeRowsToContents()
+        mono = QFont("Consolas", 10)
+        for row, tc in enumerate(TEST_CASES):
+            self.table.setItem(row, 0, self._cell(tc["name"], center=False))
+            self.table.setItem(row, 1, self._cell(f"{tc['alpha']:.1f}",  font=mono))
+            self.table.setItem(row, 2, self._cell(f"{tc['beta']:.1f}",   font=mono))
+            self.table.setItem(row, 3, self._cell(f"{tc['gamma']:.1f}",  font=mono))
+            self.table.setItem(row, 4, self._cell(str(tc["iters"]),       font=mono))
+            self.table.setItem(row, 5, self._cell(str(tc["window"]),      font=mono))
+            self.table.setCellWidget(row, 6, self._make_apply_btn(row))
+
         layout.addWidget(self.table)
-        layout.addStretch()
 
-    def _apply(self, row: int):
+        hint = QLabel("💡 Click 'Apply' to load parameters into the Snake canvas")
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet(get_hint_style())
+        layout.addWidget(hint)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cell(text: str, font: QFont | None = None, center: bool = True) -> QTableWidgetItem:
+        item = QTableWidgetItem(str(text))
+        item.setTextAlignment(Qt.AlignCenter if center else Qt.AlignLeft | Qt.AlignVCenter)
+        if font:
+            item.setFont(font)
+        return item
+
+    def _make_apply_btn(self, row: int) -> QWidget:
+        """Return a centred 'Apply' button wrapped in a transparent QWidget."""
+        btn = QPushButton("Apply")
+        btn.setFixedSize(70, 28)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['accent_teal']};
+                color: {COLORS['primary_dark']};
+                border: none;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-weight: bold;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['accent_red']};
+                color: white;
+            }}
+        """)
+        btn.clicked.connect(lambda _, r=row: self._apply(r))
+
+        wrapper = QWidget()
+        wrapper.setStyleSheet("background: transparent;")
+        btn_layout = QHBoxLayout(wrapper)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setAlignment(Qt.AlignCenter)
+        btn_layout.addWidget(btn)
+        return wrapper
+
+    def _apply(self, row: int) -> None:
         tc = TEST_CASES[row]
         self._canvas.apply_params(
-            tc["alpha"], tc["beta"], tc["gamma"], tc["window"], tc["iters"])
+            tc["alpha"], tc["beta"], tc["gamma"], tc["window"], tc["iters"]
+        )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ContourTab
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# ContourTab  (top-level tab inserted into MainWindow)
+# ---------------------------------------------------------------------------
+
 class ContourTab(QWidget):
+    """Top-level tab that hosts SnakeCanvas and TestCasesTab as sub-tabs."""
+
     def __init__(self):
         super().__init__()
+        self.setStyleSheet(get_base_styles())
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
