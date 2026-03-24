@@ -82,7 +82,8 @@ py::bytes detect_ellipses(const py::bytes& drawBytes, const py::bytes& edgeBytes
 
     // ── Algorithm parameters (matching MATLAB defaults) ──────────────────
     const int    minMajorAxis   = 10;
-    const int    maxMajorAxis   = 200;
+    const int    maxMajorAxis   = static_cast<int>(std::sqrt(
+                     edgeImg.rows * edgeImg.rows + edgeImg.cols * edgeImg.cols));
     const double rotation       = 0.0;
     const double rotationSpan   = 0.0;       // 0 → no angular constraint
     const double minAspectRatio = 0.1;
