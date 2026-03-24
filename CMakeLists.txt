@@ -28,6 +28,7 @@ pybind11_add_module(cv_backend
     Backend/Main_bindings.cpp
     Backend/Canny.cpp
     Backend/Contour.cpp
+    Backend/Hough.cpp
 )
 
 # Tell the compiler where to look for header files (like your image_utils.hpp)
