@@ -105,6 +105,33 @@ class CannyTab(QWidget):
         sep.setStyleSheet(f"background-color: {COLORS['accent_teal']};")
         ctrl_layout.addWidget(sep)
 
+        # Line sensitivity slider
+        line_sens_group = QWidget()
+        line_sens_layout = QHBoxLayout(line_sens_group)
+        line_sens_layout.setContentsMargins(0, 0, 0, 0)
+        line_sens_layout.addWidget(QLabel("Line Sensitivity:"))
+
+        self._line_sens_slider = QSlider(Qt.Horizontal)
+        self._line_sens_slider.setRange(0, 100)
+        self._line_sens_slider.setValue(33)
+        self._line_sens_slider.setFixedWidth(140)
+        self._line_sens_slider.valueChanged.connect(
+            lambda v: self._line_sens_val.setText(str(v))
+        )
+        line_sens_layout.addWidget(self._line_sens_slider)
+
+        self._line_sens_val = QLabel("33")
+        self._line_sens_val.setFixedWidth(35)
+        self._line_sens_val.setStyleSheet(f"""
+            background-color: {COLORS['white']};
+            border: 1px solid {COLORS['accent_teal']};
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-weight: bold;
+        """)
+        line_sens_layout.addWidget(self._line_sens_val)
+        ctrl_layout.addWidget(line_sens_group)
+
         self._lines_btn = QPushButton("Detect Lines")
         self._lines_btn.clicked.connect(self._detect_lines)
         ctrl_layout.addWidget(self._lines_btn)
@@ -212,7 +239,12 @@ class CannyTab(QWidget):
             self._set_status(f"Error: {exc}")
 
     def _detect_lines(self) -> None:
-        self._detect_shapes(cv_backend.detect_lines, "Lines")
+        # Map 0-100 slider → 20-200 backend threshold
+        threshold = int(20 + self._line_sens_slider.value() * 1.8)
+        self._detect_shapes(
+            lambda draw, edge: cv_backend.detect_lines(draw, edge, threshold),
+            "Lines",
+        )
 
     def _detect_circles(self) -> None:
         self._detect_shapes(cv_backend.detect_circles, "Circles")

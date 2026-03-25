@@ -8,7 +8,7 @@ namespace py = pybind11;
 // ── Forward declarations ──────────────────────────────────────────────────────
 py::bytes run_canny(const py::bytes& imageBytes, int t_high_percent);
 
-py::bytes detect_lines(const py::bytes& drawBytes, const py::bytes& edgeBytes);
+py::bytes detect_lines(const py::bytes& drawBytes, const py::bytes& edgeBytes, int lineThreshold);
 py::bytes detect_circles(const py::bytes& drawBytes, const py::bytes& edgeBytes);
 py::bytes detect_ellipses(const py::bytes& drawBytes, const py::bytes& edgeBytes);
 
@@ -40,7 +40,9 @@ PYBIND11_MODULE(cv_backend, m) {
     m.def("detect_lines", &detect_lines,
           py::arg("draw_bytes"),
           py::arg("edge_bytes"),
-          "Detect lines via Hough transform. Returns annotated image as PNG bytes.");
+          py::arg("line_threshold") = 80,
+          "Detect lines via Hough transform. line_threshold controls sensitivity "
+          "(higher = fewer, sharper lines). Returns annotated image as PNG bytes.");
 
     m.def("detect_circles", &detect_circles,
           py::arg("draw_bytes"),

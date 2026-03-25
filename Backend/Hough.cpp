@@ -10,7 +10,7 @@
 
 namespace py = pybind11;
 
-py::bytes detect_lines(const py::bytes& drawBytes, const py::bytes& edgeBytes) {
+py::bytes detect_lines(const py::bytes& drawBytes, const py::bytes& edgeBytes, int lineThreshold) {
     cv::Mat drawImg = decode_image(drawBytes);
     cv::Mat edgeImg = decode_image(edgeBytes);
 
@@ -54,7 +54,7 @@ py::bytes detect_lines(const py::bytes& drawBytes, const py::bytes& edgeBytes) {
     }
 
     // ── 3. Find peaks (simple threshold + local-max in 5×5 window) ──────
-    const int voteThresh = 80;
+    const int voteThresh = lineThreshold;
     struct Peak { int rho; int theta; int votes; };
     std::vector<Peak> peaks;
 
@@ -81,9 +81,9 @@ py::bytes detect_lines(const py::bytes& drawBytes, const py::bytes& edgeBytes) {
 
     // ── 4. Extract line segments from each peak ─────────────────────────
     // For each (rho, theta) line, walk across the image and collect edge
-    // pixels within 2 px.  Group consecutive hits into segments (min 30 px).
+    // pixels within 2 px.  Group consecutive hits into segments.
     const int proximity = 2;
-    const int minSegLen = 30;
+    const int minSegLen = std::max(10, lineThreshold / 3);
 
     for (const auto& pk : peaks) {
         double cosA = cosT[pk.theta];
