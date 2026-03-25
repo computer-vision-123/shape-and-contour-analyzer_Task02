@@ -149,14 +149,20 @@ py::bytes detect_circles(const py::bytes& drawBytes, const py::bytes& edgeBytes)
     const int minR = 15;
     const int maxR = std::min(rows, cols) / 2;
 
-    // ── 1. Compute Sobel gradients ──────────────────────────────────────
-    cv::Mat gx, gy;
-    cv::Sobel(edgeImg, gx, CV_32F, 1, 0, 3);
-    cv::Sobel(edgeImg, gy, CV_32F, 0, 1, 3);
+    // ── 1. Compute Sobel gradients from the ORIGINAL image ──────────────
+    // Gradients on the original grayscale image point reliably toward/away
+    // from circle centres, unlike gradients on a binary edge image.
+    cv::Mat gray;
+    cv::cvtColor(drawImg, gray, cv::COLOR_BGR2GRAY);
+    cv::GaussianBlur(gray, gray, cv::Size(5, 5), 1.5);
 
-    // ── 2. Vote for circle centers along gradient direction ─────────────
-    // For each edge pixel, cast votes at (x ± r·gx/|g|, y ± r·gy/|g|)
-    // for r in [minR, maxR].
+    cv::Mat gx, gy;
+    cv::Sobel(gray, gx, CV_32F, 1, 0, 3);
+    cv::Sobel(gray, gy, CV_32F, 0, 1, 3);
+
+    // ── 2. Vote for circle centres along the gradient direction ─────────
+    // Only edge pixels vote.  For each, cast votes along its gradient
+    // direction at candidate centre positions for r ∈ [minR, maxR].
     std::vector<int> acc(rows * cols, 0);
 
     for (int y = 0; y < rows; ++y) {
@@ -166,14 +172,14 @@ py::bytes detect_circles(const py::bytes& drawBytes, const py::bytes& edgeBytes)
         for (int x = 0; x < cols; ++x) {
             if (eRow[x] == 0) continue;
             float mag = std::sqrt(gxRow[x] * gxRow[x] + gyRow[x] * gyRow[x]);
-            if (mag < 1e-5f) continue;
-            float dx = gxRow[x] / mag;
-            float dy = gyRow[x] / mag;
-            // Vote in both gradient directions (+ and -)
+            if (mag < 1.0f) continue;
+            float ndx = gxRow[x] / mag;
+            float ndy = gyRow[x] / mag;
+            // Vote along both + and − gradient direction
             for (int sign = -1; sign <= 1; sign += 2) {
-                for (int r = minR; r <= maxR; r += 2) {  // step 2 for speed
-                    int cx = static_cast<int>(std::round(x + sign * r * dx));
-                    int cy = static_cast<int>(std::round(y + sign * r * dy));
+                for (int r = minR; r <= maxR; r += 2) {
+                    int cx = static_cast<int>(std::round(x + sign * r * ndx));
+                    int cy = static_cast<int>(std::round(y + sign * r * ndy));
                     if (cx >= 0 && cx < cols && cy >= 0 && cy < rows)
                         acc[cy * cols + cx]++;
                 }
@@ -181,35 +187,33 @@ py::bytes detect_circles(const py::bytes& drawBytes, const py::bytes& edgeBytes)
         }
     }
 
-    // ── 3. Find center peaks (threshold + non-maximum suppression) ──────
+    // ── 3. Find centre peaks (threshold + NMS) ─────────────────────────
     const int centerThresh = 40;
-    const int nmsRadius = 20;   // suppress duplicates within this distance
+    const int nmsRadius = 30;
 
     struct Center { int x, y, votes; };
     std::vector<Center> candidates;
 
-    for (int y = nmsRadius; y < rows - nmsRadius; ++y) {
-        for (int x = nmsRadius; x < cols - nmsRadius; ++x) {
+    for (int y = 5; y < rows - 5; ++y) {
+        for (int x = 5; x < cols - 5; ++x) {
             int v = acc[y * cols + x];
             if (v < centerThresh) continue;
-            // Local max in nmsRadius × nmsRadius window (check 5×5 for speed)
+            // Local max in 11×11 neighbourhood
             bool isMax = true;
-            for (int dy = -3; dy <= 3 && isMax; ++dy)
-                for (int dx = -3; dx <= 3 && isMax; ++dx) {
-                    int ny = y + dy, nx = x + dx;
-                    if (ny >= 0 && ny < rows && nx >= 0 && nx < cols)
-                        if (acc[ny * cols + nx] > v) isMax = false;
+            for (int dy2 = -5; dy2 <= 5 && isMax; ++dy2)
+                for (int dx2 = -5; dx2 <= 5 && isMax; ++dx2) {
+                    int ny = y + dy2, nx = x + dx2;
+                    if (acc[ny * cols + nx] > v) isMax = false;
                 }
             if (isMax) candidates.push_back({x, y, v});
         }
     }
 
-    // Keep the strongest 20 candidates
+    // Sort by votes, keep top 30, then suppress nearby duplicates
     std::sort(candidates.begin(), candidates.end(),
               [](const Center& a, const Center& b) { return a.votes > b.votes; });
-    if (candidates.size() > 20) candidates.resize(20);
+    if (candidates.size() > 30) candidates.resize(30);
 
-    // Suppress centres that are too close to a stronger one
     std::vector<Center> filtered;
     for (const auto& c : candidates) {
         bool tooClose = false;
@@ -220,9 +224,9 @@ py::bytes detect_circles(const py::bytes& drawBytes, const py::bytes& edgeBytes)
         if (!tooClose) filtered.push_back(c);
     }
 
-    // ── 4. For each center, find the best radius ────────────────────────
-    // Histogram of edge-pixel distances from the center; pick the peak.
+    // ── 4. For each centre, find the best radius + validate ─────────────
     for (const auto& c : filtered) {
+        // Build a histogram of edge-pixel distances from this centre
         std::vector<int> rHist(maxR + 1, 0);
         for (int y = 0; y < rows; ++y) {
             const uchar* eRow = edgeImg.ptr<uchar>(y);
@@ -234,18 +238,21 @@ py::bytes detect_circles(const py::bytes& drawBytes, const py::bytes& edgeBytes)
                     rHist[dist]++;
             }
         }
-        // Find the radius with the most support
+
+        // Find the radius with the strongest peak (smoothed ±1 bin)
         int bestR = minR, bestVotes = 0;
         for (int r = minR; r <= maxR; ++r) {
-            // Sum a small window [r-1, r+1] to handle discretisation
             int sum = rHist[r];
             if (r > minR) sum += rHist[r - 1];
             if (r < maxR) sum += rHist[r + 1];
             if (sum > bestVotes) { bestVotes = sum; bestR = r; }
         }
 
-        // Only draw if there is reasonable circular support
-        if (bestVotes < 15) continue;
+        // ── Circularity check: require ≥ 25 % of the ideal circumference ──
+        // The ideal number of edge pixels on a perfect circle is 2·π·r.
+        double circumference = 2.0 * CV_PI * bestR;
+        double coverage = bestVotes / circumference;
+        if (coverage < 0.25) continue;
 
         cv::circle(drawImg, cv::Point(c.x, c.y), bestR,
                    cv::Scalar(255, 0, 0), 2, cv::LINE_AA);
